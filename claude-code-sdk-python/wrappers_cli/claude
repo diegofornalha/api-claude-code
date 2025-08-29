@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""
+Claude - Interface de chat interativo para o Claude Code SDK.
+Digite suas mensagens e pressione Enter para enviar.
+"""
+
+import sys
+import asyncio
+import os
+
+# Adiciona o diretório ao path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+
+from src import AssistantMessage, TextBlock, ResultMessage, ClaudeSDKClient, __version__
+
+async def chat_mode():
+    """Modo chat interativo com contexto mantido."""
+    print("=" * 60)
+    print(f"🤖 Claude Code SDK Python v{__version__} - Chat Interativo")
+    print("=" * 60)
+    print("💬 Digite suas mensagens e pressione Enter para enviar")
+    print("📝 Comandos: 's' ou 'sair' para sair, Ctrl+I para interromper")
+    print("🔄 Comandos: 'l' ou 'limpar', 'n' ou 'novo' para limpar contexto")
+    print("-" * 60)
+    
+    client = ClaudeSDKClient()
+    await client.connect()
+    
+    try:
+        while True:
+            # Aguarda input do usuário
+            try:
+                prompt = input("\n👤 Você: ").strip()
+            except EOFError:
+                break
+                
+            if not prompt:
+                continue
+                
+            # Comandos especiais
+            if prompt.lower() in ['s', 'sair']:
+                print("👋 Até logo!")
+                break
+            
+            if prompt.lower() in ['l', 'limpar', 'n', 'novo']:
+                print("🔄 Contexto limpo. Iniciando nova conversa...")
+                await client.disconnect()
+                client = ClaudeSDKClient()
+                await client.connect()
+                continue
+            
+            # Envia query e mostra resposta
+            print("-" * 40)
+            try:
+                await client.query(prompt)
+                
+                async for message in client.receive_response():
+                    if isinstance(message, AssistantMessage):
+                        print("🤖 Claude: ", end="")
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                print(block.text)
+                    elif isinstance(message, ResultMessage):
+                        if hasattr(message, 'usage') and message.usage:
+                            tokens_info = ""
+                            if hasattr(message.usage, 'input_tokens'):
+                                tokens_info = f"[Tokens: {message.usage.input_tokens}↑ {message.usage.output_tokens}↓]"
+                            elif isinstance(message.usage, dict):
+                                tokens_info = f"[Tokens: {message.usage.get('input_tokens', 0)}↑ {message.usage.get('output_tokens', 0)}↓]"
+                            if tokens_info:
+                                print(f"\n{tokens_info}", end="")
+                        if hasattr(message, 'total_cost_usd') and message.total_cost_usd:
+                            print(f" [Custo: ${message.total_cost_usd:.6f}]")
+                        
+            except Exception as e:
+                print(f"❌ Erro: {e}")
+                
+    except KeyboardInterrupt:
+        print("\n\n👋 Interrompido!")
+    finally:
+        await client.disconnect()
+
+if __name__ == "__main__":
+    # Desabilita buffer do output
+    sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)
+    sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 1)
+    
+    # Sempre executa modo chat
+    try:
+        asyncio.run(chat_mode())
+    except KeyboardInterrupt:
+        print("\n👋 Até logo!")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Erro fatal: {e}")
+        sys.exit(1)
+    finally:
+        sys.exit(0)
