@@ -84,7 +84,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Configurações
-VIEWER_URL = "http://localhost:3041"
+VIEWER_URL = "http://localhost:3043"
 CLAUDE_PROJECTS_PATH = Path("/home/suthub/.claude/projects")
 
 # Estado da sessão
