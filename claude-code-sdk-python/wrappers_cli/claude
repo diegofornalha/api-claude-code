@@ -22,18 +22,52 @@ from src import AssistantMessage, TextBlock, ResultMessage, ClaudeSDKClient, __v
 VIEWER_API_URL = "http://localhost:3043"
 
 async def get_sessions():
-    """Busca sessões do viewer HTTP."""
+    """Busca sessões diretamente do sistema de arquivos."""
     try:
-        response = requests.get(f"{VIEWER_API_URL}/api/sessions", timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"❌ Erro HTTP {response.status_code} ao carregar sessões")
+        # Primeiro tenta usar a API HTTP se disponível
+        try:
+            response = requests.get(f"{VIEWER_API_URL}/api/sessions", timeout=2)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            pass
+        
+        # Se falhar, lê diretamente do sistema de arquivos
+        sessions = []
+        claude_projects_path = Path.home() / ".claude" / "projects"
+        
+        if not claude_projects_path.exists():
+            print(f"❌ Diretório de projetos não encontrado: {claude_projects_path}")
             return []
-    except requests.exceptions.ConnectionError:
-        print(f"❌ Não foi possível conectar ao viewer em {VIEWER_API_URL}")
-        print("💡 Certifique-se de que o viewer está rodando")
-        return []
+        
+        # Percorre todos os diretórios de projeto
+        for project_dir in claude_projects_path.iterdir():
+            if project_dir.is_dir():
+                # Busca arquivos .jsonl (sessões)
+                for session_file in project_dir.glob("*.jsonl"):
+                    try:
+                        # Obtém informações básicas da sessão
+                        session_id = session_file.stem
+                        # Mantém o nome original do diretório para correspondência
+                        directory = project_dir.name
+                        
+                        # Obtém última modificação
+                        last_modified = datetime.fromtimestamp(session_file.stat().st_mtime)
+                        last_interaction = last_modified.strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        sessions.append({
+                            "session_id": session_id,
+                            "directory": directory,
+                            "last_interaction": last_interaction,
+                            "file_path": str(session_file)
+                        })
+                    except Exception as e:
+                        continue
+        
+        # Ordena por data de última interação (mais recentes primeiro)
+        sessions.sort(key=lambda x: x.get('last_interaction', ''), reverse=True)
+        return sessions
+        
     except Exception as e:
         print(f"❌ Erro ao carregar sessões: {str(e)}")
         return []
@@ -59,6 +93,7 @@ async def session_browser():
         print("3. 📁 Filtrar por diretório/projeto")
         print("4. 🌐 Abrir sessão no viewer web")
         print("5. 📝 Gerar resumo de sessão")
+        print("6. 🔄 Carregar e continuar sessão")
         print("0. ⬅️  Voltar ao chat")
         
         try:
@@ -78,6 +113,8 @@ async def session_browser():
             await open_in_web(sessions)
         elif choice == "5":
             await generate_summary(sessions)
+        elif choice == "6":
+            return await load_and_continue_session(sessions)
         else:
             print("❌ Opção inválida")
 
@@ -90,7 +127,12 @@ async def list_sessions(sessions, limit=20):
     sorted_sessions = sorted(sessions, key=lambda x: x.get('last_interaction', ''), reverse=True)
     
     for i, session in enumerate(sorted_sessions[:limit]):
-        directory_short = session['directory'].split('/')[-1] if '/' in session['directory'] else session['directory']
+        # Extrai apenas a parte final do diretório para exibição
+        directory_parts = session['directory'].split('--')
+        if len(directory_parts) > 1:
+            directory_short = directory_parts[-1].replace('-', '/')
+        else:
+            directory_short = session['directory'].replace('-', '/')
         print(f"{i+1:2d}. 📄 {session['session_id'][:12]}... | 📁 {directory_short} | ⏰ {session.get('last_interaction', 'N/A')}")
     
     if len(sessions) > limit:
@@ -286,8 +328,154 @@ async def generate_summary(sessions):
     
     input("\nPressione Enter para continuar...")
 
-async def chat_mode():
+async def load_and_continue_session(sessions, session_id=None):
+    """Carrega uma sessão anterior e continua a conversa."""
+    if session_id:
+        session_input = session_id
+    else:
+        try:
+            session_input = input("\n🔄 Digite o ID da sessão para carregar (ou parte): ").strip()
+        except EOFError:
+            return None
+            
+        if not session_input:
+            return None
+    
+    matches = [s for s in sessions if session_input.lower() in s['session_id'].lower()]
+    
+    if not matches:
+        print(f"❌ Sessão '{session_input}' não encontrada")
+        # Só pede Enter se não foi carregado diretamente
+        if not session_id:
+            input("Pressione Enter para continuar...")
+        return None
+    
+    if len(matches) > 1:
+        print(f"⚠️  Múltiplas sessões encontradas ({len(matches)}). Mostrando as primeiras 5:")
+        for i, session in enumerate(matches[:5], 1):
+            print(f"   {i}. 📄 {session['session_id']} | 📁 {session['directory'].split('/')[-1]}")
+        
+        try:
+            choice = input("\n👤 Escolha uma sessão (1-5) ou 0 para cancelar: ").strip()
+            if choice == "0":
+                return None
+            idx = int(choice) - 1
+            if 0 <= idx < len(matches[:5]):
+                session = matches[idx]
+            else:
+                print("❌ Opção inválida")
+                return None
+        except (ValueError, EOFError):
+            return None
+    else:
+        session = matches[0]
+    
+    print(f"\n✅ Carregando sessão: {session['session_id']}")
+    print(f"📁 Projeto: {session['directory']}")
+    print(f"⏰ Última interação: {session['last_interaction']}")
+    
+    # Lê o conteúdo da sessão
+    try:
+        with open(session['file_path'], 'r') as f:
+            lines = f.readlines()
+        
+        print(f"\n📊 Sessão carregada com {len(lines)} mensagens")
+        
+        # Mostra resumo das últimas mensagens
+        recent_messages = []
+        for line in lines[-10:]:  # Últimas 10 mensagens
+            try:
+                data = json.loads(line)
+                msg_type = data.get('type')
+                
+                if msg_type == 'user':
+                    # Mensagem do usuário está em data.message.content
+                    message = data.get('message', {})
+                    content = message.get('content', '')
+                    if content:
+                        text = content[:80] + ('...' if len(content) > 80 else '')
+                        recent_messages.append(f"👤 {text}")
+                        
+                elif msg_type == 'assistant':
+                    # Mensagem do assistente está em data.message.content
+                    message = data.get('message', {})
+                    content = message.get('content', [])
+                    if isinstance(content, list) and content:
+                        for block in content:
+                            if isinstance(block, dict) and block.get('type') == 'text':
+                                text = block.get('text', '')[:80]
+                                text = text.replace('\n', ' ')
+                                if text:
+                                    text += '...' if len(block.get('text', '')) > 80 else ''
+                                    recent_messages.append(f"🤖 {text}")
+                                    break
+            except Exception as e:
+                continue
+        
+        if recent_messages:
+            print("\n📝 Últimas mensagens da conversa:")
+            for msg in recent_messages[-5:]:  # Mostra apenas as 5 últimas
+                print(f"   {msg}")
+        
+        print("\n💡 Para continuar esta sessão, você precisaria:")
+        print("   1. Exportar o histórico para um formato compatível")
+        print("   2. Carregar o contexto no cliente Claude Code SDK")
+        print("   3. Ou usar o viewer web para visualizar a sessão completa")
+        
+        print("\n⚠️  Nota: A continuação direta de sessões antigas ainda não está")
+        print("   totalmente implementada. Use o viewer web para melhor experiência.")
+        
+        # Só pede Enter se não foi carregado diretamente (session_id passado como argumento)
+        if not session_id:
+            input("\nPressione Enter para voltar ao menu...")
+        
+    except Exception as e:
+        print(f"❌ Erro ao ler sessão: {str(e)}")
+        # Só pede Enter se não foi carregado diretamente
+        if not session_id:
+            input("Pressione Enter para continuar...")
+    
+    # Retorna as mensagens históricas para serem carregadas no contexto
+    return {'session': session, 'messages': lines if 'lines' in locals() else []}
+
+async def load_session_directly(session_id):
+    """Carrega e exibe uma sessão específica e continua o chat."""
+    print("=" * 60)
+    print(f"🤖 Claude Code SDK Python v{__version__} - Continuando Sessão")
+    print("=" * 60)
+    print(f"🔄 Carregando sessão: {session_id[:12]}...")
+    print("-" * 60)
+    
+    sessions = await get_sessions()
+    session_data = None
+    
+    if sessions:
+        # Mostra informações da sessão
+        result = await load_and_continue_session(sessions, session_id)
+        # Se a sessão foi encontrada e carregada com sucesso
+        if result and isinstance(result, dict):
+            session_data = result
+    
+    if not session_data:
+        print(f"❌ Erro ao carregar sessão: {session_id}")
+        print("\n💡 Iniciando nova conversa...")
+    else:
+        print("\n✅ Sessão carregada! Continuando conversa...")
+        print("💡 O contexto anterior foi carregado na memória.")
+    
+    print("-" * 60)
+    return session_data  # Retorna dados da sessão se carregada
+
+async def chat_mode(session_id=None):
     """Modo chat interativo com contexto mantido."""
+    session_data = None
+    
+    # Se foi passado um session_id, carrega a sessão primeiro
+    if session_id:
+        session_data = await load_session_directly(session_id)
+        print("")  # Linha em branco para separação
+        # Continua para o modo chat normal após carregar a sessão
+    
     print("=" * 60)
     print(f"🤖 Claude Code SDK Python v{__version__} - Chat Interativo")
     print("=" * 60)
@@ -298,13 +486,88 @@ async def chat_mode():
     print("-" * 60)
     
     client = ClaudeSDKClient()
+    
+    # Se temos dados de sessão, precisamos carregar o contexto
+    if session_data and session_data.get('messages'):
+        print("\n🔄 Carregando contexto da conversa anterior...")
+        
+        # Processa mensagens históricas e carrega no cliente
+        messages_to_load = []
+        for line in session_data['messages']:
+            try:
+                data = json.loads(line)
+                msg_type = data.get('type')
+                message = data.get('message', {})
+                
+                if msg_type == 'user':
+                    content = message.get('content', '')
+                    if content and not isinstance(content, list):  # Evita mensagens de tool_result
+                        messages_to_load.append({'type': 'user', 'content': content})
+                elif msg_type == 'assistant':
+                    content = message.get('content', [])
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get('type') == 'text':
+                                text = block.get('text', '')
+                                if text:
+                                    messages_to_load.append({'type': 'assistant', 'content': text})
+                                    break
+            except:
+                continue
+        
+        # Conecta com contexto histórico
+        print(f"📦 {len(messages_to_load)} mensagens do histórico carregadas")
+        
+        # Por enquanto, vamos criar um prompt inicial resumindo o contexto
+        if messages_to_load:
+            context_summary = "\n📝 Contexto da conversa anterior:\n"
+            for msg in messages_to_load[-6:]:  # Últimas 6 mensagens
+                if msg['type'] == 'user':
+                    context_summary += f"Usuário: {msg['content'][:100]}...\n" if len(msg['content']) > 100 else f"Usuário: {msg['content']}\n"
+                else:
+                    context_summary += f"Claude: {msg['content'][:100]}...\n" if len(msg['content']) > 100 else f"Claude: {msg['content']}\n"
+            
+            print(context_summary)
+            print("-" * 60)
+    
     await client.connect()
+    
+    # Se temos contexto para estabelecer, envia como primeira mensagem invisível
+    if session_data and messages_to_load:
+        context_prompt = "Contexto: Estamos continuando uma conversa anterior. "
+        
+        # Extrai informações importantes do contexto
+        user_info = {}
+        for msg in messages_to_load:
+            if msg['type'] == 'user' and 'nome' in msg['content'].lower():
+                # Procura por padrões como "meu nome é X"
+                content = msg['content'].lower()
+                if 'meu nome é' in content:
+                    parts = content.split('meu nome é')
+                    if len(parts) > 1:
+                        name = parts[1].strip().split()[0]
+                        user_info['nome'] = name.capitalize()
+        
+        if user_info:
+            context_prompt += f"Informações do usuário: Nome = {user_info.get('nome', 'não informado')}. "
+        
+        context_prompt += f"Tivemos {len(messages_to_load)} trocas de mensagens. "
+        context_prompt += "Continue a conversa naturalmente lembrando do contexto anterior. Não mencione que está continuando uma conversa anterior, apenas responda normalmente."
+        
+        # Envia contexto silenciosamente
+        await client.query(context_prompt)
+        # Consome resposta sem mostrar
+        async for message in client.receive_response():
+            pass  # Descarta a resposta do estabelecimento de contexto
+    
+    # Imprime o prompt inicial imediatamente
+    print("\n👤 Você: ", end="", flush=True)
     
     try:
         while True:
             # Aguarda input do usuário
             try:
-                prompt = input("\n👤 Você: ").strip()
+                prompt = input().strip()  # Não precisa do prompt aqui, já foi impresso
             except EOFError:
                 break
                 
@@ -363,9 +626,14 @@ if __name__ == "__main__":
     sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', 1)
     sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', 1)
     
-    # Sempre executa modo chat
+    # Verifica se foi passado um ID de sessão como argumento
+    session_id = None
+    if len(sys.argv) > 1:
+        session_id = sys.argv[1]
+    
+    # Executa modo chat (com ou sem sessão específica)
     try:
-        asyncio.run(chat_mode())
+        asyncio.run(chat_mode(session_id))
     except KeyboardInterrupt:
         print("\n👋 Até logo!")
         sys.exit(0)

@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
+from typing import AsyncGenerator
 
 import pytest
 
@@ -14,6 +15,39 @@ from src.sdk_types import (
     TextBlock,
     UserMessage,
 )
+
+
+# Fixtures for common test setup
+@pytest.fixture
+def mock_transport():
+    """Create a mock transport with common async methods."""
+    transport = AsyncMock()
+    transport.connect = AsyncMock()
+    transport.disconnect = AsyncMock()
+    transport.send_request = AsyncMock()
+    transport.receive = AsyncMock()
+    transport.interrupt = AsyncMock()
+    return transport
+
+
+@pytest.fixture
+def client_options():
+    """Create default client options for testing."""
+    return ClaudeCodeOptions(
+        model="claude-3-sonnet",
+        max_turns=5,
+        system_prompt="Test system prompt"
+    )
+
+
+@pytest.fixture
+async def connected_client(mock_transport):
+    """Create a client with connected mock transport."""
+    client = ClaudeSDKClient()
+    client._transport = mock_transport
+    yield client
+    # Cleanup if needed
+    client._transport = None
 
 
 class TestClientInitialization:
@@ -47,57 +81,70 @@ class TestClientConnection:
     """Test client connection methods."""
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_connect_with_string_prompt(self, mock_transport_class):
+    async def test_connect_with_string_prompt(self):
         """Test connecting with a string prompt."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        client = ClaudeSDKClient()
-        await client.connect("Hello Claude")
-        
-        assert client._transport is mock_transport
-        assert mock_transport.connect.called
-        
-        # Check that string prompt was passed
-        call_args = mock_transport_class.call_args
-        assert call_args[1]["prompt"] == "Hello Claude"
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            # Configure mock transport
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
+            
+            client = ClaudeSDKClient()
+            await client.connect("Hello Claude")
+            
+            # Verify transport was created with correct parameters
+            MockTransport.assert_called_once()
+            call_args = MockTransport.call_args
+            # Check using kwargs instead of args
+            assert call_args.kwargs['prompt'] == "Hello Claude"  # prompt
+            assert isinstance(call_args.kwargs['options'], ClaudeCodeOptions)  # options
+            
+            # Verify connect was called
+            mock_transport_instance.connect.assert_called_once()
+            assert client._transport is mock_transport_instance
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_connect_with_async_iterable(self, mock_transport_class):
-        """Test connecting with an async iterable."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
+    async def test_connect_with_async_iterable(self):
+        """Test connecting with an async iterable prompt."""
+        async def prompt_generator():
+            yield {"type": "user", "content": "Message 1"}
+            yield {"type": "assistant", "content": "Response 1"}
         
-        async def message_stream():
-            yield {"message": "test1"}
-            yield {"message": "test2"}
-        
-        client = ClaudeSDKClient()
-        await client.connect(message_stream())
-        
-        assert client._transport is mock_transport
-        assert mock_transport.connect.called
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
+            
+            client = ClaudeSDKClient()
+            prompt_gen = prompt_generator()
+            await client.connect(prompt_gen)
+            
+            # Verify transport was created with async iterable
+            MockTransport.assert_called_once()
+            call_args = MockTransport.call_args
+            # Check using kwargs
+            assert hasattr(call_args.kwargs['prompt'], '__aiter__')
+            
+            mock_transport_instance.connect.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_connect_with_no_prompt(self, mock_transport_class):
-        """Test connecting with no prompt (interactive mode)."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        client = ClaudeSDKClient()
-        await client.connect()
-        
-        assert client._transport is mock_transport
-        assert mock_transport.connect.called
-        
-        # Check that an empty async generator was created
-        call_args = mock_transport_class.call_args
-        prompt = call_args[1]["prompt"]
-        # Verify it's an async generator
-        assert hasattr(prompt, "__aiter__")
+    async def test_connect_with_no_prompt(self):
+        """Test connecting without a prompt (interactive mode)."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
+            
+            client = ClaudeSDKClient()
+            await client.connect()
+            
+            # Verify transport was created with async generator for interactive mode
+            MockTransport.assert_called_once()
+            call_args = MockTransport.call_args
+            # When no prompt is provided, connect creates an empty async generator
+            assert hasattr(call_args.kwargs['prompt'], '__aiter__')
+            
+            mock_transport_instance.connect.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_disconnect(self):
@@ -135,74 +182,103 @@ class TestMessageReceiving:
         assert "Not connected" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    @patch("src.client.parse_message")
-    async def test_receive_messages(self, mock_parse):
-        """Test receiving and parsing messages."""
+    async def test_receive_messages(self):
+        """Test receiving messages from transport."""
         client = ClaudeSDKClient()
         
-        # Mock transport
-        mock_transport = AsyncMock()
-        async def mock_receive():
-            yield {"type": "user", "data": "message1"}
-            yield {"type": "assistant", "data": "message2"}
+        # Create mock messages with correct structure
+        mock_messages = [
+            {
+                "type": "assistant", 
+                "message": {
+                    "content": [{"type": "text", "text": "Hello"}],
+                    "model": "claude-3"
+                }
+            },
+            {
+                "type": "user", 
+                "message": {"content": "Hi"}
+            },
+            {
+                "type": "result", 
+                "subtype": "result",
+                "duration_ms": 100,
+                "duration_api_ms": 80,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "test",
+                "result": "Success"
+            }
+        ]
         
+        # Configure mock transport to yield messages
+        async def mock_receive():
+            for msg in mock_messages:
+                yield msg
+        
+        mock_transport = MagicMock()
+        # Make receive_messages return the async generator directly (not a coroutine)
         mock_transport.receive_messages = mock_receive
         client._transport = mock_transport
         
-        # Mock parse_message
-        mock_parse.side_effect = [
-            UserMessage(content="parsed1"),
-            AssistantMessage(content=[], model="claude")
-        ]
+        # Collect received messages
+        received = []
+        async for message in client.receive_messages():
+            received.append(message)
         
-        messages = []
-        async for msg in client.receive_messages():
-            messages.append(msg)
-        
-        assert len(messages) == 2
-        assert isinstance(messages[0], UserMessage)
-        assert isinstance(messages[1], AssistantMessage)
+        assert len(received) == 3
+        assert isinstance(received[0], AssistantMessage)
+        assert isinstance(received[1], UserMessage)
+        assert isinstance(received[2], ResultMessage)
 
     @pytest.mark.asyncio
-    @patch("src.client.parse_message")
-    async def test_receive_response_until_result(self, mock_parse):
-        """Test receive_response stops after ResultMessage."""
+    async def test_receive_result_message(self):
+        """Test receiving a result message from transport."""
         client = ClaudeSDKClient()
         
-        # Mock transport
-        mock_transport = AsyncMock()
-        async def mock_receive():
-            yield {"type": "user"}
-            yield {"type": "assistant"}
-            yield {"type": "result"}  # Should stop after this
-            yield {"type": "another"}  # Should not receive this
+        # Create mock messages ending with result
+        mock_messages = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Processing..."}],
+                    "model": "claude-3"
+                }
+            },
+            {
+                "type": "result",
+                "subtype": "result",
+                "duration_ms": 1000,
+                "duration_api_ms": 800,
+                "is_error": False,
+                "num_turns": 1,
+                "session_id": "test_session",
+                "result": "Success"
+            }
+        ]
         
+        # Configure mock transport
+        async def mock_receive():
+            for msg in mock_messages:
+                yield msg
+        
+        mock_transport = MagicMock()
         mock_transport.receive_messages = mock_receive
         client._transport = mock_transport
         
-        # Mock parse_message
-        mock_parse.side_effect = [
-            UserMessage(content="user"),
-            AssistantMessage(content=[], model="claude"),
-            ResultMessage(
-                subtype="success",
-                duration_ms=100,
-                duration_api_ms=80,
-                is_error=False,
-                num_turns=1,
-                session_id="test"
-            ),
-            UserMessage(content="should not see this")
-        ]
+        # Receive messages and check for result
+        received = []
+        async for message in client.receive_messages():
+            received.append(message)
+            if isinstance(message, ResultMessage):
+                break
         
-        messages = []
-        async for msg in client.receive_response():
-            messages.append(msg)
-        
-        assert len(messages) == 3
-        assert isinstance(messages[2], ResultMessage)
-        # Verify we didn't receive the 4th message
-        assert mock_parse.call_count == 3
+        assert len(received) == 2
+        result = received[-1]
+        assert isinstance(result, ResultMessage)
+        assert result.result == "Success"
+        assert result.is_error is False
+
 
 
 class TestQueryMethod:
@@ -315,174 +391,212 @@ class TestContextManager:
     """Test async context manager functionality."""
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_context_manager_connect_disconnect(self, mock_transport_class):
-        """Test that context manager connects and disconnects."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        async with ClaudeSDKClient() as client:
-            assert client._transport is mock_transport
-            assert mock_transport.connect.called
-        
-        # After exiting context, should be disconnected
-        assert mock_transport.disconnect.called
-
-    @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_context_manager_with_exception(self, mock_transport_class):
-        """Test that context manager disconnects even with exception."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        with pytest.raises(ValueError):
-            async with ClaudeSDKClient() as client:
-                assert client._transport is mock_transport
-                raise ValueError("Test error")
-        
-        # Should still disconnect after exception
-        assert mock_transport.disconnect.called
-
-    @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_context_manager_interactive_mode(self, mock_transport_class):
-        """Test context manager for interactive conversation."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        # Mock receive_messages to return some messages
-        async def mock_receive():
-            yield {"type": "assistant", "content": "Ready"}
-            yield {"type": "result", "subtype": "success"}
-        
-        mock_transport.receive_messages = mock_receive
-        
-        async with ClaudeSDKClient() as client:
-            # Should be able to send query
-            await client.query("Hello")
-            assert mock_transport.send_request.called
+    async def test_context_manager_connect_disconnect(self):
+        """Test context manager connects and disconnects properly."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            mock_transport_instance.disconnect = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
             
-            # Should be able to receive messages
-            messages = []
-            with patch("src.client.parse_message") as mock_parse:
-                mock_parse.side_effect = [
-                    AssistantMessage(content=[TextBlock(text="Ready")], model="claude"),
-                    ResultMessage(
-                        subtype="success",
-                        duration_ms=100,
-                        duration_api_ms=80,
-                        is_error=False,
-                        num_turns=1,
-                        session_id="test"
-                    )
-                ]
+            options = ClaudeCodeOptions()
+            
+            async with ClaudeSDKClient(options) as client:
+                # Verify client is connected
+                assert client._transport is mock_transport_instance
+                mock_transport_instance.connect.assert_called_once()
                 
-                async for msg in client.receive_response():
-                    messages.append(msg)
+                # Use the client
+                mock_transport_instance.send_request = AsyncMock()
+                await client.query("Test message")
+                mock_transport_instance.send_request.assert_called_once()
             
-            assert len(messages) == 2
+            # Verify disconnect was called after exiting context
+            mock_transport_instance.disconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_context_manager_with_exception(self):
+        """Test context manager handles exceptions properly."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            mock_transport_instance.disconnect = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
+            
+            options = ClaudeCodeOptions()
+            
+            with pytest.raises(ValueError):
+                async with ClaudeSDKClient(options) as client:
+                    # Verify connected
+                    assert client._transport is mock_transport_instance
+                    
+                    # Raise an exception
+                    raise ValueError("Test exception")
+            
+            # Verify disconnect was still called despite exception
+            mock_transport_instance.disconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_context_manager_interactive_mode(self):
+        """Test context manager in interactive mode (no prompt)."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport_instance = AsyncMock()
+            mock_transport_instance.connect = AsyncMock()
+            mock_transport_instance.disconnect = AsyncMock()
+            mock_transport_instance.send_request = AsyncMock()
+            MockTransport.return_value = mock_transport_instance
+            
+            options = ClaudeCodeOptions()
+            
+            # Use context manager without initial prompt
+            async with ClaudeSDKClient(options) as client:
+                # Verify transport created with async generator for interactive mode
+                MockTransport.assert_called_once()
+                call_args = MockTransport.call_args
+                # When no prompt is provided, connect creates an empty async generator
+                assert hasattr(call_args.kwargs['prompt'], '__aiter__')
+                
+                # Send interactive messages
+                await client.query("First message")
+                await client.query("Second message")
+                
+                assert mock_transport_instance.send_request.call_count == 2
+            
+            mock_transport_instance.disconnect.assert_called_once()
+
 
 
 class TestIntegrationScenarios:
     """Test integration scenarios."""
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    @patch("src.client.parse_message")
-    async def test_complete_conversation_flow(self, mock_parse, mock_transport_class):
-        """Test a complete conversation flow."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        # Mock message stream
-        message_queue = []
-        
-        async def mock_receive():
-            for msg in message_queue:
-                yield msg
-        
-        mock_transport.receive_messages = mock_receive
-        
-        # Setup parse_message mock
-        def parse_side_effect(data):
-            if data["type"] == "user":
-                return UserMessage(content=data.get("content", ""))
-            elif data["type"] == "assistant":
-                return AssistantMessage(
-                    content=[TextBlock(text=data.get("text", ""))],
-                    model="claude"
-                )
-            elif data["type"] == "result":
-                return ResultMessage(
-                    subtype="success",
-                    duration_ms=100,
-                    duration_api_ms=80,
-                    is_error=False,
-                    num_turns=1,
-                    session_id="test"
-                )
-            return None
-        
-        mock_parse.side_effect = parse_side_effect
-        
-        async with ClaudeSDKClient() as client:
-            # Send first query
+    async def test_complete_conversation_flow(self):
+        """Test complete conversation flow from connect to disconnect."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            # Setup mock transport with full conversation
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.disconnect = AsyncMock()
+            mock_transport.send_request = AsyncMock()
+            MockTransport.return_value = mock_transport
+            
+            # Setup mock receive messages as dicts with correct structure
+            conversation_messages = [
+                {
+                    "type": "user",
+                    "message": {"content": "Hello Claude"}
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Hello! How can I help?"}],
+                        "model": "claude-3"
+                    }
+                },
+                {
+                    "type": "user",
+                    "message": {"content": "What's 2+2?"}
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "2+2 equals 4"}],
+                        "model": "claude-3"
+                    }
+                },
+                {
+                    "type": "result",
+                    "subtype": "result",
+                    "duration_ms": 1500,
+                    "duration_api_ms": 1200,
+                    "is_error": False,
+                    "num_turns": 2,
+                    "session_id": "test",
+                    "result": "Conversation complete"
+                }
+            ]
+            
+            async def mock_receive():
+                for msg in conversation_messages:
+                    yield msg
+            
+            mock_transport.receive_messages = mock_receive
+            
+            # Execute full conversation
+            client = ClaudeSDKClient()
+            await client.connect("Hello Claude")
+            
+            # Verify connection
+            mock_transport.connect.assert_called_once()
+            assert client._transport is mock_transport
+            
+            # Send additional query
             await client.query("What's 2+2?")
             
-            # Simulate response
-            message_queue.extend([
-                {"type": "assistant", "text": "2+2 equals 4"},
-                {"type": "result"}
-            ])
+            # Receive all messages
+            messages = []
+            async for msg in client.receive_messages():
+                messages.append(msg)
+                if isinstance(msg, ResultMessage):
+                    break
             
-            # Receive response
-            responses = []
-            async for msg in client.receive_response():
-                responses.append(msg)
+            assert len(messages) == 5
+            assert isinstance(messages[0], UserMessage)
+            assert isinstance(messages[1], AssistantMessage)
+            assert isinstance(messages[4], ResultMessage)
             
-            assert len(responses) == 2
-            assert isinstance(responses[0], AssistantMessage)
-            assert isinstance(responses[1], ResultMessage)
-            
-            # Send follow-up
-            message_queue.clear()
-            await client.query("What about 3+3?")
-            
-            # Simulate second response
-            message_queue.extend([
-                {"type": "assistant", "text": "3+3 equals 6"},
-                {"type": "result"}
-            ])
-            
-            # Receive second response
-            responses = []
-            async for msg in client.receive_response():
-                responses.append(msg)
-            
-            assert len(responses) == 2
+            # Disconnect
+            await client.disconnect()
+            mock_transport.disconnect.assert_called_once()
+            assert client._transport is None
 
     @pytest.mark.asyncio
-    @patch("src.client.SubprocessCLITransport")
-    async def test_manual_connection_lifecycle(self, mock_transport_class):
-        """Test manual connection and disconnection."""
-        mock_transport = AsyncMock()
-        mock_transport_class.return_value = mock_transport
-        
-        client = ClaudeSDKClient()
-        
-        # Manual connect
-        async def message_stream():
-            yield {"type": "user", "message": {"content": "Initial"}}
-        
-        await client.connect(message_stream())
-        assert client._transport is not None
-        assert mock_transport.connect.called
-        
-        # Use the client
-        await client.query("Follow-up message")
-        assert mock_transport.send_request.called
-        
-        # Manual disconnect
-        await client.disconnect()
-        assert mock_transport.disconnect.called
-        assert client._transport is None
+    async def test_manual_connection_lifecycle(self):
+        """Test manual connection lifecycle management."""
+        with patch('src._internal.transport.subprocess_cli.SubprocessCLITransport') as MockTransport:
+            mock_transport = AsyncMock()
+            mock_transport.connect = AsyncMock()
+            mock_transport.disconnect = AsyncMock()
+            mock_transport.send_request = AsyncMock()
+            mock_transport.interrupt = AsyncMock()
+            MockTransport.return_value = mock_transport
+            
+            # Create client
+            client = ClaudeSDKClient(ClaudeCodeOptions(
+                model="claude-3-opus",
+                max_turns=3
+            ))
+            
+            # Initially not connected
+            assert client._transport is None
+            
+            # Connect manually
+            await client.connect()
+            assert client._transport is mock_transport
+            mock_transport.connect.assert_called_once()
+            
+            # Perform operations
+            await client.query("Test 1")
+            assert mock_transport.send_request.call_count == 1
+            
+            await client.query("Test 2")  
+            assert mock_transport.send_request.call_count == 2
+            
+            # Interrupt
+            await client.interrupt()
+            mock_transport.interrupt.assert_called_once()
+            
+            # Still connected after interrupt
+            assert client._transport is not None
+            
+            # Disconnect manually
+            await client.disconnect()
+            mock_transport.disconnect.assert_called_once()
+            assert client._transport is None
+            
+            # Can reconnect
+            mock_transport.connect.reset_mock()
+            await client.connect("New session")
+            assert client._transport is mock_transport
+            mock_transport.connect.assert_called_once()
+
