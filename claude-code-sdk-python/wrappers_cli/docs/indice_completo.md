@@ -6,7 +6,7 @@
 
 ## 📚 **ESTRUTURA DETALHADA**
 
-### 🌱 **FUNDAMENTOS TÉCNICOS** (22h20min)
+### 🌱 **FUNDAMENTOS TÉCNICOS** (24h50min)
 
 #### **📖 MÓDULO 1: Python + Claude** (4h20min)
 1. ✅ [SDK Deep Dive - Arquitetura](curso_modulo_01_aula_01.md) - 60min
@@ -20,11 +20,12 @@
 3. ✅ [Streaming Architecture - Real-time](curso_modulo_02_aula_03.md) - 90min
 4. ✅ [Conversation Patterns - Advanced Flows](curso_modulo_02_aula_04.md) - 75min
 
-#### **🛠️ MÓDULO 3: CLI Engineering** (6h)
+#### **🛠️ MÓDULO 3: CLI Engineering** (8h30min)
 1. ✅ [CLI UX Engineering - Design Patterns](curso_modulo_03_aula_01.md) - 90min
 2. ✅ [Code Architecture Analysis - Reverse Engineering](curso_modulo_03_aula_02.md) - 120min
 3. ✅ [Command System Extension - Extensibility](curso_modulo_03_aula_03.md) - 120min
 4. ✅ [Debugging & Monitoring - Observability](curso_modulo_03_aula_04.md) - 90min
+5. ✅ [Engenharia de Sessão Única - Monitor de Persistência](curso_modulo_03_aula_05.md) - 150min
 
 #### **⚙️ MÓDULO 4: Internal Architecture Mastery** (7h)
 1. ✅ [4-Layer Architecture Deep Dive - System Design](curso_modulo_04_aula_01.md) - 105min

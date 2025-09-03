@@ -33,11 +33,12 @@ Formar **Universal Intelligence Architects** capazes de liderar a revolução da
 - ✅ [Aula 3: Streaming Architecture - Real-time](curso_modulo_02_aula_03.md) (90min)
 - ✅ [Aula 4: Conversation Patterns - Advanced Flows](curso_modulo_02_aula_04.md) (75min)
 
-#### **MÓDULO 3: CLI Engineering** (6h)
+#### **MÓDULO 3: CLI Engineering** (8h30min)
 - ✅ [Aula 1: CLI UX Engineering - Design Patterns](curso_modulo_03_aula_01.md) (90min)
 - ✅ [Aula 2: Code Architecture Analysis - Reverse Engineering](curso_modulo_03_aula_02.md) (120min)
 - ✅ [Aula 3: Command System Extension - Extensibility](curso_modulo_03_aula_03.md) (120min)
 - ✅ [Aula 4: Debugging & Monitoring - Observability](curso_modulo_03_aula_04.md) (90min)
+- ✅ ⭐ [Aula 5: Engenharia de Sessão Única - Monitor de Persistência](curso_modulo_03_aula_05.md) (150min) **NOVO!**
 
 #### **MÓDULO 4: Internal Architecture Mastery** (7h)
 - ✅ [Aula 1: 4-Layer Architecture Deep Dive - System Design](curso_modulo_04_aula_01.md) (105min)
@@ -124,7 +125,7 @@ Cada módulo = Teoria Mínima + Prática Máxima + Reflexão + Expansão
 
 ## 📊 **NÍVEIS DE CERTIFICAÇÃO**
 
-### **🥉 BRONZE: Claude SDK Developer** (Módulos 1-4 | 22h)
+### **🥉 BRONZE: Claude SDK Developer** (Módulos 1-4 | 24h50min)
 **Competências:**
 - ✅ Usar Claude Code SDK profissionalmente
 - ✅ Construir aplicações Claude funcionais

@@ -137,6 +137,7 @@ class ClaudeCodeOptions:
     cwd: str | Path | None = None
     settings: str | None = None
     add_dirs: list[str | Path] = field(default_factory=list)
+    session_id: str | None = None  # Campo para especificar o ID da sessão
     env: dict[str, str] = field(default_factory=dict)
     extra_args: dict[str, str | None] = field(
         default_factory=dict

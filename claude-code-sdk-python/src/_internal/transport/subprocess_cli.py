@@ -131,6 +131,10 @@ class SubprocessCLITransport(Transport):
         if self._options.resume:
             cmd.extend(["--resume", self._options.resume])
 
+        # Se temos session_id, passamos como resume (pois é o que o CLI espera)
+        if self._options.session_id and not self._options.resume:
+            cmd.extend(["--resume", self._options.session_id])
+
         if self._options.settings:
             cmd.extend(["--settings", self._options.settings])
 

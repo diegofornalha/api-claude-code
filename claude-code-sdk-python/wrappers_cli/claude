@@ -9,14 +9,14 @@ import asyncio
 import os
 import json
 import requests
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # Adiciona o diretório ao path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from src import AssistantMessage, TextBlock, ResultMessage, ClaudeSDKClient, __version__
+from src import AssistantMessage, TextBlock, ResultMessage, ClaudeSDKClient, ClaudeCodeOptions, __version__
 
 # Configurações do viewer
 VIEWER_API_URL = "http://localhost:3043"
@@ -438,6 +438,33 @@ async def load_and_continue_session(sessions, session_id=None):
     # Retorna as mensagens históricas para serem carregadas no contexto
     return {'session': session, 'messages': lines if 'lines' in locals() else []}
 
+def get_session_file_path(session_id):
+    """Retorna o caminho completo do arquivo JSONL da sessão."""
+    project_dir = Path.home() / ".claude" / "projects" / "-home-suthub--claude-api-claude-code-app-claude-code-sdk-python-wrappers-cli"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    return project_dir / f"{session_id}.jsonl"
+
+async def append_to_jsonl(file_path, message_data):
+    """Adiciona uma mensagem ao arquivo JSONL existente no formato do CLI."""
+    try:
+        # Garante que o arquivo existe
+        Path(file_path).touch(exist_ok=True)
+        
+        # Converte para o formato do CLI se necessário
+        cli_format = {
+            "type": message_data.get("type", "user"),
+            "message": message_data.get("message", {}),
+            "timestamp": message_data.get("timestamp", datetime.now().isoformat()),
+            "sessionId": message_data.get("session_id", "default")
+        }
+        
+        with open(file_path, 'a') as f:
+            f.write(json.dumps(cli_format) + '\n')
+        return True
+    except Exception as e:
+        print(f"⚠️ Erro ao escrever no arquivo JSONL: {e}")
+        return False
+
 async def load_session_directly(session_id):
     """Carrega e exibe uma sessão específica e continua o chat."""
     print("=" * 60)
@@ -469,23 +496,42 @@ async def load_session_directly(session_id):
 async def chat_mode(session_id=None):
     """Modo chat interativo com contexto mantido."""
     session_data = None
+    fixed_session_id = session_id  # Mantém o session_id original fixo
+    original_jsonl_path = None  # Caminho do arquivo JSONL original
     
     # Se foi passado um session_id, carrega a sessão primeiro
     if session_id:
         session_data = await load_session_directly(session_id)
+        # Define o caminho do arquivo JSONL - sempre o mesmo!
+        original_jsonl_path = get_session_file_path(session_id)
         print("")  # Linha em branco para separação
         # Continua para o modo chat normal após carregar a sessão
+    else:
+        # Gera um novo session_id para nova conversa
+        import uuid
+        fixed_session_id = str(uuid.uuid4())
+        original_jsonl_path = get_session_file_path(fixed_session_id)
     
     print("=" * 60)
     print(f"🤖 Claude Code SDK Python v{__version__} - Chat Interativo")
     print("=" * 60)
+    print(f"📄 Session ID: {fixed_session_id}")
+    print(f"📂 Arquivo: {original_jsonl_path.name}")
+    print("-" * 60)
     print("💬 Digite suas mensagens e pressione Enter para enviar")
     print("📝 Comandos: 's' ou 'sair' para sair, Ctrl+I para interromper")
     print("🔄 Comandos: 'l' ou 'limpar', 'n' ou 'novo' para limpar contexto")
     print("🔍 Comandos: 'v' ou 'viewer' para navegar sessões")
     print("-" * 60)
     
-    client = ClaudeSDKClient()
+    # Se temos um session_id, configura o cliente com o session_id nas options
+    if fixed_session_id:
+        options = ClaudeCodeOptions(
+            session_id=fixed_session_id  # Passa o session_id diretamente para manter o mesmo arquivo
+        )
+        client = ClaudeSDKClient(options)
+    else:
+        client = ClaudeSDKClient()
     
     # Se temos dados de sessão, precisamos carregar o contexto
     if session_data and session_data.get('messages'):
@@ -554,8 +600,8 @@ async def chat_mode(session_id=None):
         context_prompt += f"Tivemos {len(messages_to_load)} trocas de mensagens. "
         context_prompt += "Continue a conversa naturalmente lembrando do contexto anterior. Não mencione que está continuando uma conversa anterior, apenas responda normalmente."
         
-        # Envia contexto silenciosamente
-        await client.query(context_prompt)
+        # Envia contexto silenciosamente com o session_id fixo
+        await client.query(context_prompt, session_id=fixed_session_id or "default")
         # Consome resposta sem mostrar
         async for message in client.receive_response():
             pass  # Descarta a resposta do estabelecimento de contexto
@@ -572,6 +618,7 @@ async def chat_mode(session_id=None):
                 break
                 
             if not prompt:
+                print("\n👤 Você: ", end="", flush=True)  # Reimprime o prompt se vazio
                 continue
                 
             # Comandos especiais
@@ -582,26 +629,55 @@ async def chat_mode(session_id=None):
             if prompt.lower() in ['l', 'limpar', 'n', 'novo']:
                 print("🔄 Contexto limpo. Iniciando nova conversa...")
                 await client.disconnect()
-                client = ClaudeSDKClient()
+                # Limpa o session_id ao criar nova conversa
+                session_id = None
+                client = ClaudeSDKClient()  # Sem options/resume para nova conversa
                 await client.connect()
+                print("\n👤 Você: ", end="", flush=True)  # Imprime prompt após limpar
                 continue
             
             if prompt.lower() in ['v', 'viewer']:
                 await session_browser()
+                print("\n👤 Você: ", end="", flush=True)  # Imprime prompt após viewer
                 continue
             
             # Envia query e mostra resposta
             print("-" * 40)
             try:
-                await client.query(prompt)
+                # Salva a mensagem do usuário no arquivo JSONL original se existir
+                if original_jsonl_path:
+                    user_message = {
+                        "type": "user",
+                        "message": {"role": "user", "content": prompt},
+                        "session_id": fixed_session_id,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await append_to_jsonl(original_jsonl_path, user_message)
                 
+                # Usa o session_id fixo se disponível, senão usa "default"
+                await client.query(prompt, session_id=fixed_session_id or "default")
+                
+                assistant_response = []
                 async for message in client.receive_response():
                     if isinstance(message, AssistantMessage):
                         print("🤖 Claude: ", end="")
                         for block in message.content:
                             if isinstance(block, TextBlock):
                                 print(block.text)
+                                assistant_response.append(block.text)
                     elif isinstance(message, ResultMessage):
+                        # Salva a resposta do assistente no arquivo JSONL original
+                        if original_jsonl_path and assistant_response:
+                            assistant_message = {
+                                "type": "assistant",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": " ".join(assistant_response)}]
+                                },
+                                "session_id": fixed_session_id,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            await append_to_jsonl(original_jsonl_path, assistant_message)
                         if hasattr(message, 'usage') and message.usage:
                             tokens_info = ""
                             if hasattr(message.usage, 'input_tokens'):
@@ -615,6 +691,9 @@ async def chat_mode(session_id=None):
                         
             except Exception as e:
                 print(f"❌ Erro: {e}")
+            
+            # Imprime o próximo prompt
+            print("\n👤 Você: ", end="", flush=True)
                 
     except KeyboardInterrupt:
         print("\n\n👋 Interrompido!")
